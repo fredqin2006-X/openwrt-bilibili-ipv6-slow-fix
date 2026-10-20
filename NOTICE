@@ -1,0 +1,3 @@
+Adapted from fredqin2006-X/openwrt-xiaohongshu-ipv6-slow-fix
+Reference commit: 3b70ae7027a1d77c8d8ec3df925026f201903a98
+Changes: independent Bilibili service and target domains; video CDN ports 8082/4483; immediate DNS refresh when the owned nft table is restored.

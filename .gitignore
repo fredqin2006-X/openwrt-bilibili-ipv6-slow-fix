@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+*.pcap
+*.pcapng
+*.log
+.env
+.env.*

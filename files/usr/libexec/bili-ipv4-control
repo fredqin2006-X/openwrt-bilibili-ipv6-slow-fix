@@ -1,0 +1,63 @@
+#!/bin/sh
+set -eu
+LAN_IFACE=br-lan
+[ ! -r /etc/bili-ipv4/options ] || . /etc/bili-ipv4/options
+render() {
+    case "$1" in ''|*[!a-zA-Z0-9_.:-]*) echo 'Invalid LAN interface' >&2; return 1;; esac
+    [ "${#1}" -le 15 ] || return 1
+    cat <<EOF
+add table inet bili_ipv4
+add set inet bili_ipv4 targets6 { type ipv6_addr; flags timeout; timeout 1h; gc-interval 1m; size 4096; }
+add chain inet bili_ipv4 forward { type filter hook forward priority -10; policy accept; }
+add rule inet bili_ipv4 forward iifname "$1" ip6 daddr @targets6 tcp dport { 80, 443, 8082, 4483 } counter reject with tcp reset comment "BILI IPv4 preference: LAN web TCP"
+add rule inet bili_ipv4 forward iifname "$1" ip6 daddr @targets6 udp dport { 443, 4483 } counter reject with icmpv6 type port-unreachable comment "BILI IPv4 preference: LAN QUIC"
+EOF
+}
+refresh_hosts() {
+    while IFS= read -r domain; do
+        case "$domain" in ''|'#'*) continue;; esac
+        timeout 3 nslookup -type=AAAA "$domain" 127.0.0.1 >/dev/null 2>&1 || :
+    done < /etc/bili-ipv4/hosts
+}
+case "${1:-status}" in
+render) render "${2:-$LAN_IFACE}" ;;
+ensure)
+    if ! nft list table inet bili_ipv4 >/dev/null 2>&1; then
+        rules=$(render "$LAN_IFACE")
+        printf '%s\n' "$rules" | nft -f -
+        logger -t bili-ipv4 'Restored LAN IPv6 web target table'
+    else
+        chain=$(nft list chain inet bili_ipv4 forward 2>/dev/null || :)
+        count=$(printf '%s\n' "$chain" | grep -c 'BILI IPv4 preference:' || :)
+        if [ "$count" != 2 ]; then
+            if [ -z "$chain" ]; then
+                nft add chain inet bili_ipv4 forward '{ type filter hook forward priority -10; policy accept; }'
+            else
+                nft flush chain inet bili_ipv4 forward
+            fi
+            render "$LAN_IFACE" | awk '/^add rule /' | nft -f -
+        fi
+    fi
+    ;;
+maintain)
+    next_refresh=0
+    while :; do
+        if ! nft list table inet bili_ipv4 >/dev/null 2>&1; then next_refresh=0; fi
+        "$0" ensure
+        now=$(date +%s)
+        if [ "$now" -ge "$next_refresh" ]; then
+            refresh_hosts
+            next_refresh=$((now + 300))
+        fi
+        sleep 15
+    done
+    ;;
+refresh) refresh_hosts ;;
+status)
+    printf 'Version: '; cat /etc/bili-ipv4/VERSION
+    printf 'LAN interface: %s\n' "$LAN_IFACE"
+    /etc/init.d/bili-ipv4 status
+    nft list table inet bili_ipv4
+    ;;
+*) echo 'Usage: bili-ipv4-control {status|ensure|refresh|maintain|render [interface]}' >&2; exit 2;;
+esac
